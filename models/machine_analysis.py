@@ -1,26 +1,5 @@
-# -*- coding: utf-8 -*-
-###################################################################################
-#
-#    Cybrosys Technologies Pvt. Ltd.
-#    Copyright (C) 2022-TODAY Cybrosys Technologies(<http://www.cybrosys.com>).
-#    Author: cybrosys(<https://www.cybrosys.com>)
-#
-#    This program is free software: you can modify
-#    it under the terms of the GNU Affero General Public License (AGPL) as
-#    published by the Free Software Foundation, either version 3 of the
-#    License, or (at your option) any later version.
-#
-#    This program is distributed in the hope that it will be useful,
-#    but WITHOUT ANY WARRANTY; without even the implied warranty of
-#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#    GNU Affero General Public License for more details.
-#
-#    You should have received a copy of the GNU Affero General Public License
-#    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-###################################################################################
-from odoo import tools
-from odoo import models, fields, api, _
+from odoo import tools, models, fields, api, _
+from odoo.exceptions import ValidationError
 
 
 class HrEmployee(models.Model):
@@ -28,32 +7,46 @@ class HrEmployee(models.Model):
 
     device_id = fields.Char(string='Biometric Device ID')
 
-
 class ZkMachine(models.Model):
     _name = 'zk.machine.attendance'
     _inherit = 'hr.attendance'
 
-    @api.constrains('check_in', 'check_out', 'employee_id')
-    def _check_validity(self):
-        """overriding the __check_validity function for employee attendance."""
-        pass
-
     device_id = fields.Char(string='Biometric Device ID')
-    punch_type = fields.Selection([('0', 'Check In'),
-                                   ('1', 'Check Out'),
-                                   ('2', 'Break Out'),
-                                   ('3', 'Break In'),
-                                   ('4', 'Overtime In'),
-                                   ('5', 'Overtime Out')],
-                                  string='Punching Type')
-
+    punch_type = fields.Selection([
+        ('0', 'Check In'),
+        ('1', 'Check Out'),
+    ], string='Punching Type', required=True)
     attendance_type = fields.Selection([('1', 'Finger'),
                                         ('15', 'Face'),
                                         ('2','Type_2'),
                                         ('3','Password'),
                                         ('4','Card')], string='Category')
-    punching_time = fields.Datetime(string='Punching Time')
+    punching_time = fields.Datetime(string='Punching Time', required=True)
     address_id = fields.Many2one('res.partner', string='Working Address')
+
+    @api.constrains('employee_id', 'punch_type', 'punching_time')
+    def _check_validity(self):
+        for record in self:
+            # Buscar el último registro del empleado
+            last_attendance = self.search([
+                ('employee_id', '=', record.employee_id.id),
+                ('id', '!=', record.id)
+            ], order='punching_time desc', limit=1)
+
+            if last_attendance:
+                # Validar que no se repitan dos registros consecutivos del mismo tipo
+                if last_attendance.punch_type == record.punch_type:
+                    raise ValidationError(_(
+                        "No puedes registrar dos '%s' consecutivos para el empleado %s."
+                    ) % (dict(record._fields['punch_type'].selection).get(record.punch_type),
+                         record.employee_id.name))
+
+                # Validar que Check Out no ocurra antes que el último Check In
+                if record.punch_type == '1' and last_attendance.punch_type == '0' and \
+                        record.punching_time <= last_attendance.punching_time:
+                    raise ValidationError(_(
+                        "La hora de Check Out debe ser después del último Check In para el empleado %s."
+                    ) % record.employee_id.name)
 
 
 class ReportZkDevice(models.Model):
@@ -62,7 +55,7 @@ class ReportZkDevice(models.Model):
     _order = 'punching_day desc'
 
     name = fields.Many2one('hr.employee', string='Employee')
-    punching_day = fields.Datetime(string='Date')
+    punching_day = fields.Date(string='Date')
     address_id = fields.Many2one('res.partner', string='Working Address')
     attendance_type = fields.Selection([('1', 'Finger'),
                                         ('15', 'Face'),
@@ -70,37 +63,27 @@ class ReportZkDevice(models.Model):
                                         ('3','Password'),
                                         ('4','Card')],
                                        string='Category')
-    punch_type = fields.Selection([('0', 'Check In'),
-                                   ('1', 'Check Out'),
-                                   ('2', 'Break Out'),
-                                   ('3', 'Break In'),
-                                   ('4', 'Overtime In'),
-                                   ('5', 'Overtime Out')], string='Punching Type')
+    punch_type = fields.Selection([
+        ('0', 'Check In'),
+        ('1', 'Check Out'),
+    ], string='Punching Type')
     punching_time = fields.Datetime(string='Punching Time')
 
     def init(self):
         tools.drop_view_if_exists(self._cr, 'zk_report_daily_attendance')
         query = """
-            create or replace view zk_report_daily_attendance as (
-                select
-                    min(z.id) as id,
-                    z.employee_id as name,
-                    z.write_date as punching_day,
-                    z.address_id as address_id,
+            CREATE OR REPLACE VIEW zk_report_daily_attendance AS (
+                SELECT
+                    row_number() OVER () AS id,
+                    z.employee_id AS name,
+                    DATE_TRUNC('day', z.punching_time) AS punching_day,
+                    z.address_id AS address_id,
                     z.attendance_type as attendance_type,
-                    z.punching_time as punching_time,
-                    z.punch_type as punch_type
-                from zk_machine_attendance z
-                    join hr_employee e on (z.employee_id=e.id)
-                GROUP BY
-                    z.employee_id,
-                    z.write_date,
-                    z.address_id,
-                    z.attendance_type,
-                    z.punch_type,
-                    z.punching_time
+                    z.punch_type AS punch_type,
+                    z.punching_time AS punching_time
+                FROM zk_machine_attendance z
+                WHERE z.punch_type IN ('0', '1')
+                ORDER BY z.punching_time
             )
         """
         self._cr.execute(query)
-
-
