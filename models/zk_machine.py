@@ -28,6 +28,12 @@ from odoo import api, fields, models, _
 from odoo.exceptions import UserError, ValidationError
 
 _logger = logging.getLogger(__name__)
+try:
+    from zk import ZK, const
+except ImportError:
+    _logger.error("Please Install pyzk library.")
+
+_logger = logging.getLogger(__name__)
 
 
 class HrAttendance(models.Model):
@@ -38,7 +44,7 @@ class HrAttendance(models.Model):
 
 class ZkMachine(models.Model):
     _name = 'zk.machine'
-
+    
     name = fields.Char(string='Machine IP', required=True)
     port_no = fields.Integer(string='Port No', required=True)
     address_id = fields.Many2one('res.partner', string='Working Address')
@@ -59,7 +65,7 @@ class ZkMachine(models.Model):
             'type': 'ir.actions.client',
             'tag': 'reload',
         }
-
+    
     def device_connect(self, zk):
         try:
             conn = zk.connect()
